@@ -110,16 +110,23 @@ def encode_move(move: chess.Move, board: chess.Board) -> np.ndarray:
     Returns:
         np.ndarray: One-Hot-Vektor für den Zug
     """
-    # Diese Implementierung muss an die gewählte Aktionsraumcodierung angepasst werden
-    # Hier ein einfaches Beispiel mit einem Aktionsraum der Größe 4672
-    action_vector = np.zeros(4672, dtype=np.float32)
+    # Angepasste Größe für den Aktionsraum
+    action_size = 64 * 64 + 64 * 64 * 4  # Normale Züge + Umwandlungszüge
+    action_vector = np.zeros(action_size, dtype=np.float32)
 
     from_square = move.from_square
     to_square = move.to_square
-    promotion = move.promotion if move.promotion else 0
 
-    # Gleiche Formel wie in ChessEnv._move_to_index
-    index = from_square * 64 * 5 + to_square * 5 + (0 if promotion is None else promotion)
+    # Indexberechnung für normale Züge ohne Umwandlung
+    if move.promotion is None:
+        # 64*64 mögliche Kombinationen von Ausgangs- und Zielfeldern
+        index = from_square * 64 + to_square
+    else:
+        # Umwandlungszüge: Verwende zusätzliche Indizes nach den 64*64 normalen Zügen
+        promotion_offset = 64 * 64
+        promotion_type = move.promotion - 2  # Konvertiere von chess.KNIGHT(2) zu 0, etc.
+        index = promotion_offset + (from_square * 64 + to_square) * 4 + promotion_type
+
     action_vector[index] = 1
 
     return action_vector
@@ -139,14 +146,22 @@ def decode_move(action_vector: np.ndarray, board: chess.Board) -> Optional[chess
     # Finde den Index mit der höchsten Wahrscheinlichkeit
     index = np.argmax(action_vector)
 
-    # Dekodiere den Index zurück zu einem Zug (umgekehrt zu encode_move)
-    promotion = index % 5
-    promotion = None if promotion == 0 else promotion
-    to_square = (index // 5) % 64
-    from_square = index // (64 * 5)
-
-    # Erstelle den Zug
-    move = chess.Move(from_square, to_square, promotion)
+    # Normale Züge
+    promotion_offset = 64 * 64
+    if index < promotion_offset:
+        # Normaler Zug (kein Umwandlungszug)
+        from_square = index // 64
+        to_square = index % 64
+        move = chess.Move(from_square, to_square)
+    else:
+        # Umwandlungszug
+        index -= promotion_offset
+        promotion_type = index % 4  # 0=Springer, 1=Läufer, 2=Turm, 3=Dame
+        index = index // 4
+        from_square = index // 64
+        to_square = index % 64
+        promotion = promotion_type + 2  # Konvertiere zurück zu chess.KNIGHT(2), etc.
+        move = chess.Move(from_square, to_square, promotion)
 
     # Überprüfe, ob der Zug gültig ist
     if move in board.legal_moves:

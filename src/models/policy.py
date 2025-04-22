@@ -95,7 +95,9 @@ class NetworkPolicy:
             return np.array([]), []
 
         # Brett in Netzwerk-Eingabeformat umwandeln
-        board_tensor = torch.FloatTensor(board_to_planes(board)).unsqueeze(0).to(self.device)
+        board_planes = board_to_planes(board)
+        # Umordnen der Dimensionen von (8, 8, 14) zu (1, 14, 8, 8) für das Konvolutionsnetzwerk
+        board_tensor = torch.FloatTensor(board_planes).permute(2, 0, 1).unsqueeze(0).to(self.device)
 
         # Vorhersage vom Netzwerk
         with torch.no_grad():
@@ -112,7 +114,16 @@ class NetworkPolicy:
         masked_logits = policy_logits * mask
         masked_logits = masked_logits - np.max(masked_logits)  # Numerische Stabilität
         masked_exp = np.exp(masked_logits / self.temperature) * mask
-        probs = masked_exp / np.sum(masked_exp)
+        sum_exp = np.sum(masked_exp)
+
+        # Überprüfen, ob die Summe gültig ist und nicht 0
+        if sum_exp <= 0 or np.isnan(sum_exp) or np.isinf(sum_exp):
+            # Fallback: Gleichverteilung über alle gültigen Züge
+            n_moves = len(legal_moves)
+            move_probs = np.ones(n_moves) / n_moves
+            return move_probs, legal_moves
+
+        probs = masked_exp / sum_exp
 
         # Exploration durch zufällige Züge beimischen
         if self.exploration_factor > 0:
@@ -126,7 +137,19 @@ class NetworkPolicy:
             move_idx = self._move_to_index(move)
             move_probs.append(probs[move_idx])
 
-        return np.array(move_probs), legal_moves
+        # Sicherstellen, dass die Summe der Wahrscheinlichkeiten 1 ist
+        move_probs = np.array(move_probs)
+        sum_probs = np.sum(move_probs)
+
+        if sum_probs <= 0 or np.isnan(sum_probs) or np.isinf(sum_probs):
+            # Fallback: Gleichverteilung über alle gültigen Züge
+            n_moves = len(legal_moves)
+            move_probs = np.ones(n_moves) / n_moves
+        else:
+            # Normalisieren, um sicherzustellen, dass die Summe 1 ist
+            move_probs = move_probs / sum_probs
+
+        return move_probs, legal_moves
 
     def get_action(self, board: chess.Board) -> chess.Move:
         """
@@ -157,12 +180,23 @@ class NetworkPolicy:
         Returns:
             int: Der entsprechende Index
         """
-        from_square = move.from_square
-        to_square = move.to_square
-        promotion = move.promotion if move.promotion else 0
+        # Verbesserte Implementierung mit größerem Aktionsraum
+        from_square = move.from_square  # 0-63
+        to_square = move.to_square  # 0-63
 
-        # Gleiche Formel wie in der Umgebung
-        return from_square * 64 * 5 + to_square * 5 + (0 if promotion is None else promotion)
+        # Indexberechnung für normale Züge ohne Umwandlung
+        if move.promotion is None:
+            # 64*64 mögliche Kombinationen von Ausgangs- und Zielfeldern
+            return from_square * 64 + to_square
+        else:
+            # Umwandlungszüge: Verwende zusätzliche Indizes nach den 64*64 normalen Zügen
+            # Es gibt 4 Umwandlungstypen (Springer, Läufer, Turm, Dame)
+            promotion_offset = 64 * 64
+
+            # Offset basierend auf from_square, to_square und Umwandlungstyp
+            # Wir kodieren den Umwandlungstyp als 0=Springer, 1=Läufer, 2=Turm, 3=Dame
+            promotion_type = move.promotion - 2  # Konvertiere von chess.KNIGHT(2) zu 0, etc.
+            return promotion_offset + (from_square * 64 + to_square) * 4 + promotion_type
 
 
 class MCTSPolicy:
@@ -248,7 +282,9 @@ class MCTSPolicy:
         # Blatt im Suchbaum (noch nicht expandiert)
         if s not in self.P:
             # Board in Netzwerk-Eingabeformat umwandeln
-            board_tensor = torch.FloatTensor(board_to_planes(board)).unsqueeze(0).to(self.device)
+            board_planes = board_to_planes(board)
+            # Umordnen der Dimensionen von (8, 8, 14) zu (1, 14, 8, 8)
+            board_tensor = torch.FloatTensor(board_planes).permute(2, 0, 1).unsqueeze(0).to(self.device)
 
             # Vorhersage vom Netzwerk
             with torch.no_grad():
@@ -344,9 +380,20 @@ class MCTSPolicy:
         Returns:
             int: Der entsprechende Index
         """
-        from_square = move.from_square
-        to_square = move.to_square
-        promotion = move.promotion if move.promotion else 0
+        # Verbesserte Implementierung mit größerem Aktionsraum
+        from_square = move.from_square  # 0-63
+        to_square = move.to_square  # 0-63
 
-        # Gleiche Formel wie in der Umgebung
-        return from_square * 64 * 5 + to_square * 5 + (0 if promotion is None else promotion)
+        # Indexberechnung für normale Züge ohne Umwandlung
+        if move.promotion is None:
+            # 64*64 mögliche Kombinationen von Ausgangs- und Zielfeldern
+            return from_square * 64 + to_square
+        else:
+            # Umwandlungszüge: Verwende zusätzliche Indizes nach den 64*64 normalen Zügen
+            # Es gibt 4 Umwandlungstypen (Springer, Läufer, Turm, Dame)
+            promotion_offset = 64 * 64
+
+            # Offset basierend auf from_square, to_square und Umwandlungstyp
+            # Wir kodieren den Umwandlungstyp als 0=Springer, 1=Läufer, 2=Turm, 3=Dame
+            promotion_type = move.promotion - 2  # Konvertiere von chess.KNIGHT(2) zu 0, etc.
+            return promotion_offset + (from_square * 64 + to_square) * 4 + promotion_type

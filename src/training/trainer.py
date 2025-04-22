@@ -132,7 +132,7 @@ class SelfPlayWorker:
                 # Zum Erfahrungspuffer hinzufügen
                 self.experience_buffer.add(
                     state=memory_item['state'],
-                    policy_probs=memory_item['policy_probs'],
+                    policy_probs=memory_item['policy_probs'].tolist(),  # Konvertiert numpy array zu Liste
                     value=player_result,
                     legal_moves=memory_item['legal_moves']
                 )
@@ -197,6 +197,34 @@ class RLTrainer:
         self.best_model_win_rate = 0.0
         os.makedirs(checkpoint_dir, exist_ok=True)
 
+    def _move_to_index(self, move: chess.Move) -> int:
+        """
+        Wandelt einen Zug in einen eindeutigen Index um.
+        Diese Methode muss mit der gleichen Indizierungslogik wie in der Umgebung und Policy implementiert werden.
+
+        Args:
+            move: Das zu indizierende chess.Move-Objekt
+
+        Returns:
+            int: Eindeutiger Index für den Zug
+        """
+        from_square = move.from_square  # 0-63
+        to_square = move.to_square  # 0-63
+
+        # Indexberechnung für normale Züge ohne Umwandlung
+        if move.promotion is None:
+            # 64*64 mögliche Kombinationen von Ausgangs- und Zielfeldern
+            return from_square * 64 + to_square
+        else:
+            # Umwandlungszüge: Verwende zusätzliche Indizes nach den 64*64 normalen Zügen
+            # Es gibt 4 Umwandlungstypen (Springer, Läufer, Turm, Dame)
+            promotion_offset = 64 * 64
+
+            # Offset basierend auf from_square, to_square und Umwandlungstyp
+            # Wir kodieren den Umwandlungstyp als 0=Springer, 1=Läufer, 2=Turm, 3=Dame
+            promotion_type = move.promotion - 2  # Konvertiere von chess.KNIGHT(2) zu 0, etc.
+            return promotion_offset + (from_square * 64 + to_square) * 4 + promotion_type
+
     def train_iteration(self, experience_buffer: Optional[ExperienceBuffer] = None) -> Dict[str, float]:
         """
         Führt eine vollständige Trainingsiteration durch:
@@ -246,6 +274,8 @@ class RLTrainer:
         """
         self.model.train()  # Trainingsmodus aktivieren
 
+        print(f"Starte Training auf {len(experience_buffer)} gesammelten Erfahrungen")
+
         # Trainingsstatistiken
         total_loss = 0.0
         total_policy_loss = 0.0
@@ -253,52 +283,106 @@ class RLTrainer:
         num_batches = 0
 
         # Daten in Batches aufteilen und Modell trainieren
-        for _ in range(self.num_epochs):
+        for epoch in range(self.num_epochs):
+            print(f"Trainings-Epoche {epoch + 1}/{self.num_epochs}...")
+            epoch_start_time = time.time()
+
             # Daten mischen
             indices = np.arange(len(experience_buffer))
             np.random.shuffle(indices)
 
             # In Batches durchlaufen
+            batch_count = 0
             for i in range(0, len(indices), self.batch_size):
                 if i + self.batch_size > len(indices):
                     continue  # Letzten unvollständigen Batch überspringen
 
                 batch_indices = indices[i:i + self.batch_size]
-                states, policy_targets, value_targets, _ = experience_buffer.sample_batch(batch_indices)
 
-                # Konvertierung zu Torch-Tensoren
-                states = torch.FloatTensor(states).to(self.device)
-                policy_targets = torch.FloatTensor(policy_targets).to(self.device)
-                value_targets = torch.FloatTensor(value_targets).view(-1, 1).to(self.device)
+                # Debug-Ausgabe alle 10 Batches
+                batch_count += 1
+                if batch_count % 10 == 0:
+                    print(f"  Verarbeite Batch {batch_count}...")
 
-                # Forward-Pass
-                policy_logits, value_preds = self.model(states)
+                try:
+                    # Daten laden
+                    states, policy_targets, value_targets, legal_moves = experience_buffer.sample_batch(batch_indices)
 
-                # Verluste berechnen
-                # Für die Policy: Kreuzentropie-Verlust (negative log-likelihood)
-                policy_loss = -torch.mean(torch.sum(policy_targets * policy_logits, dim=1))
+                    # Konvertierung zu Torch-Tensoren und Umordnung der Dimensionen
+                    # Von (batch_size, 8, 8, 14) zu (batch_size, 14, 8, 8)
+                    states = torch.FloatTensor(states).permute(0, 3, 1, 2).to(self.device)
 
-                # Für den Wert: MSE
-                value_loss = self.value_loss_fn(value_preds, value_targets)
+                    # Da policy_targets jetzt eine Liste von Arrays unterschiedlicher Länge ist,
+                    # können wir nicht einfach einen Tensor erstellen.
+                    # Stattdessen berechnen wir den Verlust direkt für jeden Eintrag in der Liste.
+                    value_targets = torch.FloatTensor(value_targets).view(-1, 1).to(self.device)
 
-                # Gesamtverlust
-                loss = policy_loss + value_loss
+                    # Forward-Pass
+                    policy_logits, value_preds = self.model(states)
 
-                # Backpropagation
-                self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
+                    # Für den Wert: MSE-Verlust
+                    value_loss = self.value_loss_fn(value_preds, value_targets)
 
-                # Statistiken aktualisieren
-                total_loss += loss.item()
-                total_policy_loss += policy_loss.item()
-                total_value_loss += value_loss.item()
-                num_batches += 1
+                    # Für die Policy: Berechnung des Verlustes für jedes Beispiel im Batch einzeln
+                    policy_loss = 0.0
+
+                    for j, (probs, moves) in enumerate(zip(policy_targets, legal_moves)):
+                        # Wir erstellen eine Maske für gültige Züge
+                        logits = policy_logits[j]
+                        mask = torch.zeros_like(logits)
+
+                        # Konvertiere die Wahrscheinlichkeiten in einen Tensor
+                        target_probs = torch.zeros_like(logits)
+
+                        # Setze die Wahrscheinlichkeiten für gültige Züge
+                        for prob, move in zip(probs, moves):
+                            move_idx = self._move_to_index(move)
+                            mask[move_idx] = 1
+                            target_probs[move_idx] = prob
+
+                        # Berechne den Verlust nur für gültige Züge
+                        masked_logits = logits * mask
+                        cross_entropy = -torch.sum(target_probs * masked_logits)
+                        policy_loss += cross_entropy
+
+                    policy_loss = policy_loss / len(policy_targets)  # Durchschnitt über den Batch
+
+                    # Gesamtverlust
+                    loss = policy_loss + value_loss
+
+                    # Backpropagation
+                    self.optimizer.zero_grad()
+                    loss.backward()
+                    self.optimizer.step()
+
+                    # Statistiken aktualisieren
+                    total_loss += loss.item()
+                    total_policy_loss += policy_loss.item()
+                    total_value_loss += value_loss.item()
+                    num_batches += 1
+
+                except Exception as e:
+                    print(f"Fehler beim Verarbeiten von Batch {batch_count}: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+
+            # Epoche-Statistiken
+            epoch_time = time.time() - epoch_start_time
+            avg_loss = total_loss / (num_batches or 1)
+            avg_policy_loss = total_policy_loss / (num_batches or 1)
+            avg_value_loss = total_value_loss / (num_batches or 1)
+
+            print(
+                f"Epoche {epoch + 1} abgeschlossen in {epoch_time:.2f}s. Verluste: Total={avg_loss:.4f}, Policy={avg_policy_loss:.4f}, Value={avg_value_loss:.4f}")
 
         # Durchschnittliche Verluste berechnen
         avg_loss = total_loss / (num_batches or 1)
         avg_policy_loss = total_policy_loss / (num_batches or 1)
         avg_value_loss = total_value_loss / (num_batches or 1)
+
+        print(
+            f"Training abgeschlossen. Gesamt-Durchschnitt: Total={avg_loss:.4f}, Policy={avg_policy_loss:.4f}, Value={avg_value_loss:.4f}")
 
         return {
             'total_loss': avg_loss,

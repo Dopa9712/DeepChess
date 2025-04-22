@@ -121,11 +121,13 @@ def main():
 
     # Modell erstellen
     print(f"Erstelle ChessNetwork mit {args.residual_blocks} Residual-Blöcken...")
+    # Berechne die Ausgabegröße für den Aktionsraum (64*64 normale Züge + 64*64*4 Umwandlungszüge)
+    policy_output_size = 64 * 64 + 64 * 64 * 4
     model = ChessNetwork(
         input_channels=14,
         num_res_blocks=args.residual_blocks,
         num_filters=128,
-        policy_output_size=4672
+        policy_output_size=policy_output_size
     )
     model.to(args.device)
 

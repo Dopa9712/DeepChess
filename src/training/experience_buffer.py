@@ -46,7 +46,7 @@ class ExperienceBuffer:
         self.legal_moves.append(legal_moves)
 
     def sample_batch(self, indices: Optional[np.ndarray] = None, batch_size: Optional[int] = None) -> Tuple[
-        np.ndarray, np.ndarray, np.ndarray, List]:
+        np.ndarray, List, np.ndarray, List]:
         """
         Sampelt einen Batch von Erfahrungen aus dem Puffer.
 
@@ -57,7 +57,7 @@ class ExperienceBuffer:
         Returns:
             Tuple aus:
             - np.ndarray: Batch von Zuständen
-            - np.ndarray: Batch von Richtlinienwahrscheinlichkeiten
+            - List: Batch von Richtlinienwahrscheinlichkeiten (verschiedene Längen)
             - np.ndarray: Batch von Werten
             - List: Batch von Listen gültiger Züge
         """
@@ -71,8 +71,11 @@ class ExperienceBuffer:
                 indices = np.random.choice(len(self), batch_size, replace=False)
 
         # Konvertiere Listen zu NumPy-Arrays und sampele mit Indizes
-        states_batch = np.array([self.states[i] for i in indices])
-        policy_probs_batch = np.array([self.policy_probs[i] for i in indices])
+        states_batch = np.array([self.states[i] for i in indices])  # Form (batch_size, 8, 8, 14)
+
+        # Die Wahrscheinlichkeiten bleiben als Liste, da jede Zustandsposition unterschiedlich viele gültige Züge haben kann
+        policy_probs_batch = [self.policy_probs[i] for i in indices]
+
         values_batch = np.array([self.values[i] for i in indices])
         legal_moves_batch = [self.legal_moves[i] for i in indices]
 

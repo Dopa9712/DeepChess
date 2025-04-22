@@ -200,14 +200,11 @@ class ChessEnv:
         Returns:
             np.ndarray: Binäre Maske für gültige Züge
         """
-        # Einfache Implementierung mit fester Größe
-        # Dies könnte je nach Aktionsraumdarstellung angepasst werden
-        # Hier verwenden wir ein vereinfachtes Schema mit 4672 möglichen Zügen (64*73)
-        # (64 Ausgangsfelder × ca. 73 mögliche Züge pro Feld einschließlich Bauernumwandlungen)
-        action_mask = np.zeros(4672, dtype=np.float32)
+        # Erweiterte Implementierung mit angepasster Größe für den Aktionsraum
+        # 64*64 normale Züge + 64*64*4 Umwandlungszüge
+        action_mask = np.zeros(64 * 64 + 64 * 64 * 4, dtype=np.float32)
 
-        # Diese Implementierung muss je nach Aktionsraumcodierung angepasst werden
-        # Hier ein einfaches Beispiel:
+        # Diese Implementierung nutzt die _move_to_index Funktion
         for move in self.board.legal_moves:
             move_idx = self._move_to_index(move)
             action_mask[move_idx] = 1
@@ -225,15 +222,23 @@ class ChessEnv:
         Returns:
             int: Eindeutiger Index für den Zug
         """
-        # Dies ist eine vereinfachte Beispielimplementierung
-        # Eine bessere Umsetzung würde die tatsächliche Struktur des Aktionsraums berücksichtigen
-        from_square = move.from_square
-        to_square = move.to_square
-        promotion = move.promotion if move.promotion else 0
+        # Verbesserte Implementierung mit größerem Aktionsraum
+        from_square = move.from_square  # 0-63
+        to_square = move.to_square  # 0-63
 
-        # Einfache Formel: from_square * 64 * 5 + to_square * 5 + promotion
-        # 5 mögliche Beförderungen (keine, Springer, Läufer, Turm, Dame)
-        return from_square * 64 * 5 + to_square * 5 + (0 if promotion is None else promotion)
+        # Indexberechnung für normale Züge ohne Umwandlung
+        if move.promotion is None:
+            # 64*64 mögliche Kombinationen von Ausgangs- und Zielfeldern
+            return from_square * 64 + to_square
+        else:
+            # Umwandlungszüge: Verwende zusätzliche Indizes nach den 64*64 normalen Zügen
+            # Es gibt 4 Umwandlungstypen (Springer, Läufer, Turm, Dame)
+            promotion_offset = 64 * 64
+
+            # Offset basierend auf from_square, to_square und Umwandlungstyp
+            # Wir kodieren den Umwandlungstyp als 0=Springer, 1=Läufer, 2=Turm, 3=Dame
+            promotion_type = move.promotion - 2  # Konvertiere von chess.KNIGHT(2) zu 0, etc.
+            return promotion_offset + (from_square * 64 + to_square) * 4 + promotion_type
 
     def render(self, mode: str = 'unicode') -> str:
         """

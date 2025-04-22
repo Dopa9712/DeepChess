@@ -36,7 +36,7 @@ class ChessNetwork(nn.Module):
             input_channels: int = 14,  # Standardmäßig 14 Eingangskanäle (12 für Figuren + 2 für Spielzustand)
             num_res_blocks: int = 10,
             num_filters: int = 128,
-            policy_output_size: int = 4672,  # Maximale Anzahl möglicher Züge (vereinfacht)
+            policy_output_size: int = 64 * 64 + 64 * 64 * 4,  # 64*64 normale Züge + 64*64*4 Umwandlungszüge
             fc_size: int = 256
     ):
         super(ChessNetwork, self).__init__()
@@ -86,13 +86,13 @@ class ChessNetwork(nn.Module):
 
         # Policy Head
         policy = F.relu(self.policy_bn(self.policy_conv(x)))
-        policy = policy.view(-1, 32 * 8 * 8)
+        policy = policy.reshape(-1, 32 * 8 * 8)  # Verwende reshape anstelle von view
         policy = self.policy_fc(policy)
         policy = F.log_softmax(policy, dim=1)
 
         # Value Head
         value = F.relu(self.value_bn(self.value_conv(x)))
-        value = value.view(-1, 32 * 8 * 8)
+        value = value.reshape(-1, 32 * 8 * 8)  # Verwende reshape anstelle von view
         value = F.relu(self.value_fc1(value))
         value = torch.tanh(self.value_fc2(value))
 
