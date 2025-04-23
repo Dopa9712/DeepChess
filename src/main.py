@@ -8,18 +8,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-from models.network import ChessNetwork
-from training.trainer import RLTrainer
-from training.experience_buffer import ExperienceBuffer
-from environment.chess_env import ChessEnv
-from models.policy import RandomPolicy, NetworkPolicy
-
-# To use relative imports like this:
-from models.network import ChessNetwork
-from training.trainer import RLTrainer
-from .training.experience_buffer import ExperienceBuffer
-from environment.chess_env import ChessEnv
-from models.policy import RandomPolicy, NetworkPolicy
+from src.models.network import ChessNetwork
+from src.training.trainer import RLTrainer
+from src.training.experience_buffer import ExperienceBuffer
+from src.environment.chess_env import ChessEnv
+from src.models.policy import RandomPolicy, NetworkPolicy
 
 
 
