@@ -176,9 +176,9 @@ def main():
         eval_stats = trainer.evaluate()
         stats['win_rate'].append(eval_stats['win_rate'])
 
-        # Speichere Modell-Checkpoint
-        checkpoint_path = os.path.join(args.checkpoint_dir, f"model_iter_{i + 1}.pt")
-        trainer.save_model(checkpoint_path)
+        # Speichere Modell-Checkpoint (KORRIGIERT: Nur Dateiname übergeben)
+        checkpoint_filename = f"model_iter_{i + 1}.pt"
+        trainer.save_model(checkpoint_filename)
 
         # Zeige Fortschritt
         elapsed = time.time() - start_time
