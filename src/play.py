@@ -10,51 +10,54 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 from src.models.network import ChessNetwork
-from src.gui.chess_gui import play_with_gui  # This is the correct import
+from src.gui.chess_gui import play_with_gui
 
 
-def list_models(checkpoint_dir):
+def find_model_files(start_dir=None):
     """
-    List all model files in the checkpoint directory.
+    Find all .pt model files in the project by recursively searching directories.
 
     Args:
-        checkpoint_dir: Directory containing model checkpoints
+        start_dir: Directory to start searching from (defaults to current directory)
 
     Returns:
-        list: List of model file paths
+        dict: Dictionary mapping display paths to full file paths
     """
-    model_files = []
+    if start_dir is None:
+        start_dir = os.getcwd()
 
-    if not os.path.exists(checkpoint_dir):
-        print(f"Checkpoint directory {checkpoint_dir} does not exist.")
-        return model_files
+    model_files = {}
 
-    for file in os.listdir(checkpoint_dir):
-        if file.endswith('.pt'):
-            model_files.append(file)
+    for root, dirs, files in os.walk(start_dir):
+        for file in files:
+            if file.endswith('.pt'):
+                # Create a relative path for display
+                rel_path = os.path.relpath(os.path.join(root, file), start_dir)
+                model_files[rel_path] = os.path.join(root, file)
 
     return model_files
 
 
-def select_model(checkpoint_dir):
+def list_and_select_models():
     """
-    Let the user select a model from the checkpoint directory.
-
-    Args:
-        checkpoint_dir: Directory containing model checkpoints
+    List all model files in the project and let the user select one.
 
     Returns:
         str: Path to the selected model file, or None if no model was selected
     """
-    model_files = list_models(checkpoint_dir)
+    print("\nSearching for model files in the project...")
+    model_files = find_model_files()
 
     if not model_files:
-        print(f"No model files found in {checkpoint_dir}")
+        print("No model files (.pt) found in the project.")
         return None
 
-    print("\nAvailable models:")
-    for i, model_file in enumerate(model_files):
-        print(f"[{i + 1}] {model_file}")
+    # Sort the paths for better display
+    sorted_paths = sorted(model_files.keys())
+
+    print("\nFound model files:")
+    for i, path in enumerate(sorted_paths):
+        print(f"[{i + 1}] {path}")
 
     while True:
         try:
@@ -64,12 +67,12 @@ def select_model(checkpoint_dir):
                 return None
 
             choice = int(choice)
-            if 1 <= choice <= len(model_files):
-                selected_model = os.path.join(checkpoint_dir, model_files[choice - 1])
-                print(f"Selected model: {selected_model}")
+            if 1 <= choice <= len(sorted_paths):
+                selected_model = model_files[sorted_paths[choice - 1]]
+                print(f"Selected model: {sorted_paths[choice - 1]}")
                 return selected_model
             else:
-                print(f"Please select a number between 1 and {len(model_files)}")
+                print(f"Please select a number between 1 and {len(sorted_paths)}")
         except ValueError:
             print("Please enter a valid number or 'q'")
 
@@ -77,12 +80,12 @@ def select_model(checkpoint_dir):
 def main():
     """Main function for playing against a trained model."""
     parser = argparse.ArgumentParser(description='Play chess against a trained model')
-    parser.add_argument('--checkpoint-dir', type=str, default='./checkpoints',
-                        help='Directory containing model checkpoints')
     parser.add_argument('--model', type=str, default=None,
                         help='Specific model file to use (if not selecting interactively)')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
                         help='Device to use (cuda or cpu)')
+    parser.add_argument('--search', action='store_true',
+                        help='Search for model files in the entire project')
 
     args = parser.parse_args()
 
@@ -93,16 +96,12 @@ def main():
         if os.path.exists(args.model):
             model_path = args.model
         else:
-            full_path = os.path.join(args.checkpoint_dir, args.model)
-            if os.path.exists(full_path):
-                model_path = full_path
-            else:
-                print(f"Model file not found: {args.model}")
-                # Fall back to interactive selection
-                model_path = select_model(args.checkpoint_dir)
+            print(f"Model file not found: {args.model}")
+            # Fall back to interactive selection
+            model_path = list_and_select_models() if args.search else None
     else:
         # Interactive model selection
-        model_path = select_model(args.checkpoint_dir)
+        model_path = list_and_select_models() if args.search else None
 
     if model_path:
         # Launch the GUI with the selected model

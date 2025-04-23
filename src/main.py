@@ -15,14 +15,13 @@ from src.environment.chess_env import ChessEnv
 from src.models.policy import RandomPolicy, NetworkPolicy
 
 
-
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='DeepChess Training Script')
     parser.add_argument('--iterations', type=int, default=10, help='Number of training iterations')
-    parser.add_argument('--games', type=int, default=100, help='Number of self-play games per iteration')
-    parser.add_argument('--eval-games', type=int, default=20, help='Number of evaluation games')
-    parser.add_argument('--epochs', type=int, default=5, help='Number of training epochs per iteration')
+    parser.add_argument('--games', type=int, default=200, help='Number of self-play games per iteration')
+    parser.add_argument('--eval-games', type=int, default=50, help='Number of evaluation games')
+    parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs per iteration')
     parser.add_argument('--batch-size', type=int, default=256, help='Batch size for training')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
     parser.add_argument('--checkpoint-dir', type=str, default='./checkpoints', help='Directory for saving checkpoints')
@@ -62,11 +61,12 @@ def plot_training_stats(stats):
     plt.close()
 
 
-def play_game_against_human(model, device='cpu'):
+def play_game_against_human(model, device='cuda' if torch.cuda.is_available() else 'cpu'):
     """Let a human play against the trained model."""
     env = ChessEnv()
     board = env.board
-    policy = NetworkPolicy(model, device=device, temperature=0.5, exploration_factor=0.0)
+    # VERBESSERT: Niedrigere Temperatur für bessere Spielstärke
+    policy = NetworkPolicy(model, device=device, temperature=0.1, exploration_factor=0.0)
 
     print("\nSpiel gegen das trainierte Modell")
     print("Beende mit Ctrl+C")
@@ -117,6 +117,16 @@ def main():
     """Main training function."""
     args = parse_args()
 
+    # VERBESSERT: GPU-Optimierungen
+    if args.device == 'cuda' and torch.cuda.is_available():
+        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+        # Nutze Benchmarking für optimierte GPU-Nutzung
+        torch.backends.cudnn.benchmark = True
+        # Reduziere Speicherverbrauch, wenn möglich
+        torch.cuda.empty_cache()
+    else:
+        print("Using CPU for training")
+
     # Stelle sicher, dass das checkpoint-Verzeichnis existiert
     os.makedirs(args.checkpoint_dir, exist_ok=True)
 
@@ -137,6 +147,22 @@ def main():
         print(f"Lade vortrainiertes Modell aus {args.load_model}...")
         checkpoint = torch.load(args.load_model, map_location=args.device)
         model.load_state_dict(checkpoint['model_state_dict'])
+        print("Modell erfolgreich geladen!")
+    else:
+        # VERBESSERT: Gewichtinitialisierung für bessere Konvergenz
+        print("Initialisiere Modellgewichte...")
+        for m in model.modules():
+            if isinstance(m, torch.nn.Conv2d):
+                torch.nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    torch.nn.init.constant_(m.bias, 0)
+            elif isinstance(m, torch.nn.BatchNorm2d):
+                torch.nn.init.constant_(m.weight, 1)
+                torch.nn.init.constant_(m.bias, 0)
+            elif isinstance(m, torch.nn.Linear):
+                torch.nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    torch.nn.init.constant_(m.bias, 0)
 
     # Trainer erstellen
     trainer = RLTrainer(
@@ -155,13 +181,19 @@ def main():
         'policy_loss': [],
         'value_loss': [],
         'total_loss': [],
-        'win_rate': []
+        'win_rate': [],
+        'checkmate_wins': [],  # VERBESSERT: Zusätzliche Statistiken
+        'avg_material': []  # VERBESSERT: Zusätzliche Statistiken
     }
 
     # Haupttrainingschleife
     print(f"Starte Training für {args.iterations} Iterationen...")
+    total_start_time = time.time()
+
     for i in range(args.iterations):
-        print(f"\nIteration {i + 1}/{args.iterations}")
+        print(f"\n{'=' * 50}")
+        print(f"Iteration {i + 1}/{args.iterations}")
+        print(f"{'=' * 50}")
         start_time = time.time()
 
         # Training
@@ -177,7 +209,11 @@ def main():
         eval_stats = trainer.evaluate()
         stats['win_rate'].append(eval_stats['win_rate'])
 
-        # Speichere Modell-Checkpoint (KORRIGIERT: Nur Dateiname übergeben)
+        # VERBESSERT: Zusätzliche Statistiken speichern
+        stats['checkmate_wins'].append(eval_stats.get('checkmate_wins', 0))
+        stats['avg_material'].append(eval_stats.get('avg_material', 0))
+
+        # Speichere Modell-Checkpoint
         checkpoint_filename = f"model_iter_{i + 1}.pt"
         trainer.save_model(checkpoint_filename)
 
@@ -187,16 +223,35 @@ def main():
         print(f"Verluste: Policy={train_stats['policy_loss']:.4f}, Value={train_stats['value_loss']:.4f}")
         print(f"Evaluation: Siege={eval_stats['wins']}, Niederlagen={eval_stats['losses']}, "
               f"Remis={eval_stats['draws']}, Gewinnrate={eval_stats['win_rate']:.4f}")
+        print(f"Schachmatt-Siege: {eval_stats.get('checkmate_wins', 0)}")
+        print(f"Durchschn. Materialvorteil: {eval_stats.get('avg_material', 0):.2f}")
+
+        # VERBESSERT: Geschätzte verbleibende Zeit anzeigen
+        if i < args.iterations - 1:
+            avg_iter_time = (time.time() - total_start_time) / (i + 1)
+            remaining_time = avg_iter_time * (args.iterations - (i + 1))
+            remaining_hours = int(remaining_time // 3600)
+            remaining_minutes = int((remaining_time % 3600) // 60)
+            print(f"Geschätzte verbleibende Zeit: {remaining_hours}h {remaining_minutes}m")
+
+    # Gesamtzeit berechnen
+    total_time = time.time() - total_start_time
+    hours = int(total_time // 3600)
+    minutes = int((total_time % 3600) // 60)
+    seconds = int(total_time % 60)
 
     # Speichere finales Modell
     trainer.save_model("final_model.pt")
+
+    print(f"\n{'=' * 50}")
+    print(f"Training abgeschlossen in {hours}h {minutes}m {seconds}s!")
+    print(f"Beste Gewinnrate: {trainer.best_model_win_rate:.4f}")
+    print(f"{'=' * 50}")
 
     # Plotte Statistiken, falls gewünscht
     if args.plot_stats:
         print("Plotte Trainingsstatistiken...")
         plot_training_stats(stats)
-
-    print("Training abgeschlossen!")
 
     # Optional: Spiel gegen den Menschen
     play_against_human = input("Möchtest du gegen das trainierte Modell spielen? (j/n): ").lower() == 'j'

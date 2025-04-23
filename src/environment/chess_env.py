@@ -65,6 +65,12 @@ class ChessEnv:
             # Bestrafung für ungültigen Zug
             return self.get_observation(), -10.0, True, {"termination": "illegal_move"}
 
+        # Aktuelle Materialbilanz speichern, um Änderungen zu erkennen
+        prev_material_balance = self._get_material_balance()
+
+        # Speichere, ob der aktuelle Spieler im Schach steht
+        was_in_check = self.board.is_check()
+
         # Zug ausführen
         self.board.push(move)
         self.move_count += 1
@@ -76,8 +82,8 @@ class ChessEnv:
 
         # Spiel abgeschlossen?
         if self.board.is_checkmate():
-            # Belohnung für Schachmatt (positiv für den Spieler, der Matt gesetzt hat)
-            reward = 1.0 if not self.board.turn else -1.0
+            # VERBESSERT: Höhere Belohnung für Schachmatt (von 1.0 auf 10.0)
+            reward = 10.0 if not self.board.turn else -10.0
             done = True
             self.result = "1-0" if not self.board.turn else "0-1"
             info["termination"] = "checkmate"
@@ -108,15 +114,37 @@ class ChessEnv:
 
         # Zusätzliche Belohnungen für gute Spielaktionen
         if self.board.is_check():
-            # Kleiner Bonus für Schach
-            reward += 0.01
+            # VERBESSERT: Höherer Bonus für Schach (von 0.01 auf 0.1)
+            reward += 0.1
             info["check"] = True
 
-        # Materialwert könnte auch als Teil der Belohnung dienen
-        # Hier einfache Implementierung, könnte verbessert werden
-        if not done:
-            material_balance = self._get_material_balance()
-            reward += 0.001 * material_balance  # Kleiner Einfluss des Materials
+            # VERBESSERT: Bonus für die Befreiung aus einem Schach
+            if was_in_check:
+                reward += 0.05
+                info["escaped_check"] = True
+
+        # VERBESSERT: Materialwert mit höherem Einfluss
+        current_material_balance = self._get_material_balance()
+        material_change = current_material_balance - prev_material_balance
+
+        # Materialänderung mit größerem Einfluss (von 0.001 auf 0.05)
+        reward += 0.05 * material_change
+
+        # VERBESSERT: Belohnung für Figur-Entwicklung in frühen Spielphasen (< 10 Züge)
+        if self.move_count < 10 and not done:
+            # Belohne das Entwickeln von Figuren (Springer, Läufer)
+            piece = self.board.piece_at(move.to_square)
+            if piece and (piece.piece_type == chess.KNIGHT or piece.piece_type == chess.BISHOP):
+                # Belohne, wenn die Figur aus ihrer Startposition bewegt wurde
+                if (piece.color == chess.WHITE and move.from_square < 16) or \
+                        (piece.color == chess.BLACK and move.from_square >= 48):
+                    reward += 0.05
+                    info["development"] = True
+
+            # Belohne Zentrumskontrolle
+            if move.to_square in [27, 28, 35, 36]:  # e4, d4, e5, d5 squares
+                reward += 0.03
+                info["center_control"] = True
 
         return self.get_observation(), reward, done, info
 
@@ -127,16 +155,17 @@ class ChessEnv:
         Returns:
             float: Materialbilanz (positiv = Vorteil für aktuellen Spieler)
         """
+        # VERBESSERT: Genauere Materialwerte
         piece_values = {
-            chess.PAWN: 1,
-            chess.KNIGHT: 3,
+            chess.PAWN: 1.0,
+            chess.KNIGHT: 3.0,
             chess.BISHOP: 3.25,
-            chess.ROOK: 5,
-            chess.QUEEN: 9,
-            chess.KING: 0  # König hat keinen Materialwert
+            chess.ROOK: 5.0,
+            chess.QUEEN: 9.0,
+            chess.KING: 0.0  # König hat keinen Materialwert
         }
 
-        material_balance = 0
+        material_balance = 0.0
 
         for piece_type in piece_values:
             # Zähle Weiße Figuren als positiv

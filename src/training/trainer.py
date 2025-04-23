@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from src.environment.chess_env import ChessEnv
 from src.models.network import ChessNetwork
-from src.models.policy import RandomPolicy, NetworkPolicy, MCTSPolicy
+from src.models.policy import RandomPolicy, NetworkPolicy
 from src.training.experience_buffer import ExperienceBuffer
 from src.environment.utils import board_to_planes
 
@@ -24,10 +24,10 @@ class SelfPlayWorker:
     def __init__(
             self,
             model: nn.Module,
-            device: str = 'cpu',
+            device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
             num_games: int = 100,
             max_moves: int = 1000,
-            temperature: float = 1.0,
+            temperature: float = 0.8,  # VERBESSERT: Niedrigere Temperatur für bessere Spielqualität
             temperature_drop_move: int = 30,
             exploration_factor: float = 0.1,
             experience_buffer: Optional[ExperienceBuffer] = None
@@ -83,7 +83,7 @@ class SelfPlayWorker:
             while not board.is_game_over() and move_count < self.max_moves:
                 # Temperatur reduzieren nach bestimmter Anzahl von Zügen
                 if move_count == self.temperature_drop_move:
-                    policy.temperature = 0.5  # Niedrigere Temperatur für spätere Züge
+                    policy.temperature = 0.3  # VERBESSERT: Noch niedrigere Temperatur für spätere Züge
 
                 # Aktuelle Brettdarstellung
                 board_rep = board_to_planes(board)
@@ -112,7 +112,8 @@ class SelfPlayWorker:
             if board.is_checkmate():
                 # Der Spieler, der nicht am Zug ist, hat gewonnen
                 winner = not board.turn
-                result = 1.0  # Sieg
+                # VERBESSERT: Höhere Bewertung für Schachmatt
+                result = 5.0  # Erhöhter Wert für Sieg (war 1.0)
             elif board.is_stalemate() or board.is_insufficient_material() or board.is_fifty_moves() or board.is_repetition():
                 # Unentschieden
                 winner = None
@@ -149,7 +150,7 @@ class RLTrainer:
     def __init__(
             self,
             model: nn.Module,
-            device: str = 'cpu',
+            device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
             learning_rate: float = 0.001,
             l2_reg: float = 1e-4,
             batch_size: int = 256,
@@ -176,11 +177,17 @@ class RLTrainer:
         self.device = device
         self.model.to(device)
 
-        # Optimierer und Verlustfunktion
+        # VERBESSERT: Optimierer-Parameter angepasst
         self.optimizer = optim.Adam(
             model.parameters(),
             lr=learning_rate,
-            weight_decay=l2_reg
+            weight_decay=l2_reg,
+            betas=(0.9, 0.999)  # Standard-Betas, aber explizit definiert
+        )
+
+        # Scheduler für die Lernrate hinzugefügt
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, mode='min', factor=0.5, patience=2, verbose=True
         )
 
         # Verlustfunktionen
@@ -241,19 +248,24 @@ class RLTrainer:
         # Phase 1: Selbstspiele für Datensammlung
         if experience_buffer is None:
             self.model.eval()  # Evaluierungsmodus für Selbstspiele
+
+            # VERBESSERT: Adaptive Exploration basierend auf bisherigem Erfolg
+            current_exploration = max(0.05, min(0.2, 0.2 - self.best_model_win_rate / 5.0))
+
             worker = SelfPlayWorker(
                 model=self.model,
                 device=self.device,
-                num_games=self.num_self_play_games
+                num_games=self.num_self_play_games,
+                temperature=0.8,
+                exploration_factor=current_exploration
             )
             experience_buffer = worker.generate_games()
 
         # Phase 2: Training auf den gesammelten Daten
         train_stats = self.train_on_buffer(experience_buffer)
 
-        # Phase 3: Evaluation gegen ältere Version (falls verfügbar)
-        # Hier könntest du ein früheres Modell laden und gegen das neue testen
-        # Aktuell vereinfacht: Keine Evaluierung gegen ältere Version
+        # Lerrate anpassen basierend auf Trainingsverlust
+        self.scheduler.step(train_stats['total_loss'])
 
         return {
             'train_loss': train_stats['total_loss'],
@@ -340,19 +352,25 @@ class RLTrainer:
                             mask[move_idx] = 1
                             target_probs[move_idx] = prob
 
-                        # Berechne den Verlust nur für gültige Züge
+                        # VERBESSERT: Berechne den Verlust richtig mit log_softmax
                         masked_logits = logits * mask
-                        cross_entropy = -torch.sum(target_probs * masked_logits)
+                        log_probs = torch.log_softmax(masked_logits + (1 - mask) * -1e9, dim=0)
+                        cross_entropy = -torch.sum(target_probs * log_probs * mask)
                         policy_loss += cross_entropy
 
                     policy_loss = policy_loss / len(policy_targets)  # Durchschnitt über den Batch
 
-                    # Gesamtverlust
-                    loss = policy_loss + value_loss
+                    # VERBESSERT: Gesamtverlust mit angepasster Gewichtung
+                    # Erhöhe die Gewichtung des Value-Loss für bessere Stellungsbewertungen
+                    loss = policy_loss + 2.0 * value_loss
 
                     # Backpropagation
                     self.optimizer.zero_grad()
                     loss.backward()
+
+                    # VERBESSERT: Gradient Clipping für bessere Stabilität
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+
                     self.optimizer.step()
 
                     # Statistiken aktualisieren
@@ -410,13 +428,22 @@ class RLTrainer:
             opponent_model.eval()
             opponent_policy = NetworkPolicy(opponent_model, self.device, temperature=0.5)
 
-        # Richtlinie für das aktuelle Modell
-        current_policy = NetworkPolicy(self.model, self.device, temperature=0.5)
+        # VERBESSERT: Niedrigere Temperatur und keine Exploration für die Evaluation
+        current_policy = NetworkPolicy(
+            self.model,
+            self.device,
+            temperature=0.1,  # VERBESSERT: Niedrigere Temperatur für Evaluation
+            exploration_factor=0.0  # Keine Exploration während der Evaluation
+        )
 
         # Statistiken
         wins = 0
         losses = 0
         draws = 0
+        # VERBESSERT: Erfasse mehr Statistiken
+        checkmate_wins = 0
+        checkmate_losses = 0
+        material_stats = []
 
         # Evaluierungsspiele durchführen
         for game_idx in tqdm(range(self.evaluation_games), desc="Evaluation"):
@@ -442,14 +469,29 @@ class RLTrainer:
                 winner_is_white = not board.turn  # Der Spieler, der nicht am Zug ist, hat gewonnen
                 if (winner_is_white == current_starts):
                     wins += 1
+                    checkmate_wins += 1
                 else:
                     losses += 1
+                    checkmate_losses += 1
             else:
                 # Remis oder Spiellimit erreicht
                 draws += 1
 
+            # VERBESSERT: Materialbilanz am Ende erfassen
+            material_balance = 0
+            for piece_type in [chess.PAWN, chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN]:
+                material_balance += len(board.pieces(piece_type, chess.WHITE))
+                material_balance -= len(board.pieces(piece_type, chess.BLACK))
+            # Materialbilanz aus Sicht des aktuellen Modells
+            if not current_starts:  # Wenn das Modell Schwarz spielt
+                material_balance = -material_balance
+            material_stats.append(material_balance)
+
         # Berechne Gewinnrate und ELO-Schätzung (vereinfacht)
         win_rate = (wins + 0.5 * draws) / self.evaluation_games
+
+        # VERBESSERT: Detailliertere Statistiken
+        avg_material_advantage = sum(material_stats) / len(material_stats) if material_stats else 0
 
         # Speichere das beste Modell basierend auf der Gewinnrate
         if win_rate > self.best_model_win_rate:
@@ -460,7 +502,10 @@ class RLTrainer:
             'wins': wins,
             'losses': losses,
             'draws': draws,
-            'win_rate': win_rate
+            'win_rate': win_rate,
+            'checkmate_wins': checkmate_wins,
+            'checkmate_losses': checkmate_losses,
+            'avg_material': avg_material_advantage
         }
 
     def save_model(self, filename: str) -> None:
@@ -473,7 +518,8 @@ class RLTrainer:
         filepath = os.path.join(self.checkpoint_dir, filename)
         torch.save({
             'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict()
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'best_win_rate': self.best_model_win_rate
         }, filepath)
         print(f"Modell gespeichert in {filepath}")
 
@@ -491,4 +537,6 @@ class RLTrainer:
         checkpoint = torch.load(filepath, map_location=self.device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if 'best_win_rate' in checkpoint:
+            self.best_model_win_rate = checkpoint['best_win_rate']
         print(f"Modell geladen aus {filepath}")
