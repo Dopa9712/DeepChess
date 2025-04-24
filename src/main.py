@@ -30,6 +30,8 @@ def parse_args():
                         help='Device to use (cuda or cpu)')
     parser.add_argument('--plot-stats', action='store_true', help='Plot training statistics')
     parser.add_argument('--residual-blocks', type=int, default=10, help='Number of residual blocks in the network')
+    parser.add_argument('--resume', action='store_true', help='Resume training from latest checkpoint')
+    parser.add_argument('--resume-from', type=str, default=None, help='Path to checkpoint to resume from')
     return parser.parse_args()
 
 
@@ -60,6 +62,60 @@ def plot_training_stats(stats):
     plt.savefig('training_stats.png')
     plt.close()
 
+
+def check_parameter_update(model, iteration):
+    """
+    Überprüft, ob sich die Parameter des Modells seit der letzten Iteration geändert haben.
+
+    Args:
+        model: Das zu überprüfende Modell
+        iteration: Die aktuelle Iterationsnummer
+
+    Returns:
+        bool: True, wenn Parameter aktualisiert wurden, sonst False
+    """
+    # Beim ersten Aufruf initialisieren
+    if not hasattr(check_parameter_update, "last_params"):
+        check_parameter_update.last_params = {}
+        for name, param in model.named_parameters():
+            check_parameter_update.last_params[name] = param.clone().detach().cpu().numpy()
+        return True
+
+    # Nur jede zweite Iteration überprüfen, um Zeit zu sparen
+    if iteration % 2 != 0:
+        return True
+
+    changed_params = 0
+    total_params = 0
+    max_diff = 0.0
+
+    for name, param in model.named_parameters():
+        total_params += 1
+        param_data = param.detach().cpu().numpy()
+
+        # Vergleiche mit letztem bekannten Zustand
+        if name in check_parameter_update.last_params:
+            # Berechne maximale absolute Differenz
+            param_diff = np.max(np.abs(param_data - check_parameter_update.last_params[name]))
+            max_diff = max(max_diff, param_diff)
+
+            if not np.array_equal(param_data, check_parameter_update.last_params[name]):
+                changed_params += 1
+
+        # Aktualisierten Parameter speichern
+        check_parameter_update.last_params[name] = param_data
+
+    # Ausgabe der Ergebnisse
+    print(f"\nParameterüberprüfung (Iteration {iteration}):")
+    print(f"  - Geänderte Parameter: {changed_params}/{total_params} ({changed_params / total_params * 100:.1f}%)")
+    print(f"  - Maximale Parameteränderung: {max_diff:.6f}")
+
+    # Warnung, wenn keine Parameter aktualisiert wurden
+    if changed_params == 0:
+        print("\n⚠️ WARNUNG: Keine Parameter haben sich geändert! Das Modell wird nicht trainiert.")
+        return False
+
+    return True
 
 def play_game_against_human(model, device='cuda' if torch.cuda.is_available() else 'cpu'):
     """Let a human play against the trained model."""
@@ -115,6 +171,24 @@ def play_game_against_human(model, device='cuda' if torch.cuda.is_available() el
 
 def main():
     """Main training function."""
+    # Befehlszeilenargumente erweitern
+    parser = argparse.ArgumentParser(description='DeepChess Training Script')
+    parser.add_argument('--iterations', type=int, default=10, help='Number of training iterations')
+    parser.add_argument('--games', type=int, default=200, help='Number of self-play games per iteration')
+    parser.add_argument('--eval-games', type=int, default=50, help='Number of evaluation games')
+    parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs per iteration')
+    parser.add_argument('--batch-size', type=int, default=256, help='Batch size for training')
+    parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
+    parser.add_argument('--checkpoint-dir', type=str, default='./checkpoints', help='Directory for saving checkpoints')
+    parser.add_argument('--load-model', type=str, default=None, help='Path to load a pre-trained model')
+    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
+                        help='Device to use (cuda or cpu)')
+    parser.add_argument('--plot-stats', action='store_true', help='Plot training statistics')
+    parser.add_argument('--residual-blocks', type=int, default=10, help='Number of residual blocks in the network')
+    # Neue Argumente
+    parser.add_argument('--resume', action='store_true', help='Resume training from latest checkpoint')
+    parser.add_argument('--resume-from', type=str, default=None, help='Path to checkpoint to resume from')
+
     args = parse_args()
 
     # VERBESSERT: GPU-Optimierungen
@@ -130,6 +204,37 @@ def main():
     # Stelle sicher, dass das checkpoint-Verzeichnis existiert
     os.makedirs(args.checkpoint_dir, exist_ok=True)
 
+    # Finde den neuesten Checkpoint, wenn --resume angegeben ist
+    start_iteration = 0
+    latest_checkpoint = None
+
+    if args.resume:
+        checkpoint_files = [f for f in os.listdir(args.checkpoint_dir)
+                            if f.startswith("model_iter_") and f.endswith(".pt")]
+        if checkpoint_files:
+            # Sortiere nach Iterationsnummer
+            checkpoint_files.sort(key=lambda x: int(x.split("_")[-1].split(".")[0]))
+            latest_checkpoint = os.path.join(args.checkpoint_dir, checkpoint_files[-1])
+            start_iteration = int(checkpoint_files[-1].split("_")[-1].split(".")[0])
+            print(f"Neuester Checkpoint gefunden: {latest_checkpoint} (Iteration {start_iteration})")
+
+    # Override, wenn --resume-from angegeben ist
+    if args.resume_from:
+        latest_checkpoint = args.resume_from
+        # Versuche, Iterationsnummer aus dem Dateinamen zu extrahieren
+        try:
+            iter_part = os.path.basename(latest_checkpoint).split("_")[-1].split(".")[0]
+            if iter_part.isdigit():
+                start_iteration = int(iter_part)
+        except:
+            start_iteration = 0
+        print(f"Fortsetzen von angegebenem Checkpoint: {latest_checkpoint}")
+
+    # Verwende --load-model, wenn kein Fortsetzungs-Checkpoint gefunden wurde
+    if not latest_checkpoint and args.load_model:
+        latest_checkpoint = args.load_model
+        print(f"Verwende vortrainiertes Modell als Ausgangspunkt: {latest_checkpoint}")
+
     # Modell erstellen
     print(f"Erstelle ChessNetwork mit {args.residual_blocks} Residual-Blöcken...")
     # Berechne die Ausgabegröße für den Aktionsraum (64*64 normale Züge + 64*64*4 Umwandlungszüge)
@@ -142,12 +247,23 @@ def main():
     )
     model.to(args.device)
 
+    # Trainer erstellen
+    trainer = RLTrainer(
+        model=model,
+        device=args.device,
+        learning_rate=args.lr,
+        batch_size=args.batch_size,
+        num_epochs=args.epochs,
+        checkpoint_dir=args.checkpoint_dir,
+        num_self_play_games=args.games,
+        evaluation_games=args.eval_games
+    )
+
     # Modell laden, falls angegeben
-    if args.load_model and os.path.exists(args.load_model):
-        print(f"Lade vortrainiertes Modell aus {args.load_model}...")
-        checkpoint = torch.load(args.load_model, map_location=args.device)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        print("Modell erfolgreich geladen!")
+    if latest_checkpoint and os.path.exists(latest_checkpoint):
+        print(f"Lade Modell aus {latest_checkpoint}...")
+        trainer.load_model(latest_checkpoint)
+        print(f"Starte Training bei Iteration {start_iteration + 1}")
     else:
         # VERBESSERT: Gewichtinitialisierung für bessere Konvergenz
         print("Initialisiere Modellgewichte...")
@@ -164,18 +280,6 @@ def main():
                 if m.bias is not None:
                     torch.nn.init.constant_(m.bias, 0)
 
-    # Trainer erstellen
-    trainer = RLTrainer(
-        model=model,
-        device=args.device,
-        learning_rate=args.lr,
-        batch_size=args.batch_size,
-        num_epochs=args.epochs,
-        checkpoint_dir=args.checkpoint_dir,
-        num_self_play_games=args.games,
-        evaluation_games=args.eval_games
-    )
-
     # Statistik-Tracking
     stats = {
         'policy_loss': [],
@@ -190,7 +294,7 @@ def main():
     print(f"Starte Training für {args.iterations} Iterationen...")
     total_start_time = time.time()
 
-    for i in range(args.iterations):
+    for i in range(start_iteration, args.iterations):
         print(f"\n{'=' * 50}")
         print(f"Iteration {i + 1}/{args.iterations}")
         print(f"{'=' * 50}")
@@ -198,6 +302,11 @@ def main():
 
         # Training
         train_stats = trainer.train_iteration()
+
+        # Überprüfe, ob die Parameter aktualisiert wurden
+        if not check_parameter_update(model, i + 1):
+            print("Versuche, das Training mit angepassten Parametern fortzusetzen...")
+            # Hier könnten Anpassungen vorgenommen werden, z.B. Lernrate erhöhen
 
         # Statistiken speichern
         stats['policy_loss'].append(train_stats['policy_loss'])
@@ -228,7 +337,7 @@ def main():
 
         # VERBESSERT: Geschätzte verbleibende Zeit anzeigen
         if i < args.iterations - 1:
-            avg_iter_time = (time.time() - total_start_time) / (i + 1)
+            avg_iter_time = (time.time() - total_start_time) / (i + 1 - start_iteration)
             remaining_time = avg_iter_time * (args.iterations - (i + 1))
             remaining_hours = int(remaining_time // 3600)
             remaining_minutes = int((remaining_time % 3600) // 60)
@@ -257,6 +366,8 @@ def main():
     play_against_human = input("Möchtest du gegen das trainierte Modell spielen? (j/n): ").lower() == 'j'
     if play_against_human:
         play_game_against_human(model, device=args.device)
+
+
 
 
 if __name__ == "__main__":

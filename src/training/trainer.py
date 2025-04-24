@@ -245,6 +245,9 @@ class RLTrainer:
         Returns:
             Dict[str, float]: Statistiken über die Trainingsiteration
         """
+        # Fortschritt verfolgen
+        self.track_progress()
+
         # Phase 1: Selbstspiele für Datensammlung
         if experience_buffer is None:
             self.model.eval()  # Evaluierungsmodus für Selbstspiele
@@ -266,6 +269,12 @@ class RLTrainer:
 
         # Lerrate anpassen basierend auf Trainingsverlust
         self.scheduler.step(train_stats['total_loss'])
+
+        # Trainingsstatistiken speichern
+        if hasattr(self, 'training_stats'):
+            self.training_stats['policy_losses'].append(train_stats['policy_loss'])
+            self.training_stats['value_losses'].append(train_stats['value_loss'])
+            self.training_stats['total_losses'].append(train_stats['total_loss'])
 
         return {
             'train_loss': train_stats['total_loss'],
@@ -498,6 +507,15 @@ class RLTrainer:
             self.best_model_win_rate = win_rate
             self.save_model("best_model.pt")
 
+            # Aktualisiere Trainingsstatistiken
+            if hasattr(self, 'training_stats'):
+                self.training_stats['best_win_rate'] = win_rate
+                self.training_stats['last_improvement_iter'] = self.training_stats['iterations']
+
+        # Speichere Gewinnrate in Trainingsstatistiken
+        if hasattr(self, 'training_stats'):
+            self.training_stats['win_rates'].append(win_rate)
+
         return {
             'wins': wins,
             'losses': losses,
@@ -510,22 +528,40 @@ class RLTrainer:
 
     def save_model(self, filename: str) -> None:
         """
-        Speichert das Modell in einer Datei.
+        Speichert das Modell in einer Datei mit zusätzlichen Metadaten.
 
         Args:
             filename: Name der Datei, in der das Modell gespeichert werden soll
         """
         filepath = os.path.join(self.checkpoint_dir, filename)
+
+        # Mehr Informationen im Checkpoint speichern
         torch.save({
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'best_win_rate': self.best_model_win_rate
+            'scheduler_state_dict': self.scheduler.state_dict(),  # Scheduler-Status speichern
+            'best_win_rate': self.best_model_win_rate,
+            'timestamp': time.time(),
+            'training_stats': getattr(self, 'training_stats', {})  # Historische Daten speichern, falls vorhanden
         }, filepath)
+
         print(f"Modell gespeichert in {filepath}")
+
+        # Auch das beste Modell in einer separaten Datei speichern, wenn es sich verbessert hat
+        if "best" in filename or "iter" in filename:
+            # Kopie von best_model.pt als best_model_iter_X.pt speichern
+            if self.best_model_win_rate > 0 and "iter" in filename:
+                iter_num = filename.split("_")[-1].split(".")[0]
+                best_copy_path = os.path.join(self.checkpoint_dir, f"best_model_iter_{iter_num}.pt")
+                import shutil
+                best_model_path = os.path.join(self.checkpoint_dir, "best_model.pt")
+                if os.path.exists(best_model_path):
+                    shutil.copy2(best_model_path, best_copy_path)
+                    print(f"Kopie des besten Modells gespeichert in {best_copy_path}")
 
     def load_model(self, filepath: str) -> None:
         """
-        Lädt ein Modell aus einer Datei.
+        Lädt ein Modell aus einer Datei mit zusätzlichen Metadaten.
 
         Args:
             filepath: Pfad zur Modelldatei
@@ -534,9 +570,44 @@ class RLTrainer:
             print(f"Modelldatei {filepath} nicht gefunden.")
             return
 
+        print(f"Lade Modell aus {filepath}...")
         checkpoint = torch.load(filepath, map_location=self.device)
+
+        # Modell und Optimierer laden
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+        # Scheduler laden, falls vorhanden
+        if 'scheduler_state_dict' in checkpoint:
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+
+        # Weitere Metadaten laden
         if 'best_win_rate' in checkpoint:
             self.best_model_win_rate = checkpoint['best_win_rate']
-        print(f"Modell geladen aus {filepath}")
+            print(f"Beste Gewinnrate: {self.best_model_win_rate:.4f}")
+
+        if 'timestamp' in checkpoint:
+            load_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(checkpoint['timestamp']))
+            print(f"Modell wurde gespeichert am: {load_time}")
+
+        if 'training_stats' in checkpoint:
+            self.training_stats = checkpoint['training_stats']
+
+        print(f"Modell erfolgreich geladen!")
+
+    def track_progress(self):
+        """
+        Initialisiert oder aktualisiert die Tracking-Informationen für das Training.
+        """
+        if not hasattr(self, 'training_stats'):
+            self.training_stats = {
+                'iterations': 0,
+                'win_rates': [],
+                'policy_losses': [],
+                'value_losses': [],
+                'total_losses': [],
+                'best_win_rate': 0.0,
+                'last_improvement_iter': 0
+            }
+
+        self.training_stats['iterations'] += 1
