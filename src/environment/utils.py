@@ -180,33 +180,29 @@ def decode_move(action_vector: np.ndarray, board: chess.Board) -> Optional[chess
 
 def get_symmetries(board: chess.Board, policy: np.ndarray) -> List[Tuple[np.ndarray, np.ndarray]]:
     """
-    Erzeugt Symmetrien (Spiegelungen) einer Brett-Policy-Kombination zur Datenerweiterung.
+    Generate symmetries (reflections) of a board-policy combination for data augmentation.
 
     Args:
-        board: Das Schachbrett
-        policy: Der Richtlinienvektor für das Brett
+        board: The chess board
+        policy: The policy vector for the board
 
     Returns:
-        List[Tuple[np.ndarray, np.ndarray]]: Liste von (Brett, Policy)-Paaren mit Spiegelungen
+        List[Tuple[np.ndarray, np.ndarray]]: List of (board, policy) pairs with reflections
     """
-    # Diese Funktion muss sorgfältig implementiert werden, um die Schachregeln zu respektieren
-    # Eine einfache horizontale Spiegelung wird hier als Beispiel gezeigt
+    # Convert board to planes for easier manipulation
+    board_planes = board_to_planes(board)
 
-    # Brettdarstellung
-    board_rep = board_to_planes(board)
+    # Original combination
+    symmetries = [(board_planes, policy)]
 
-    # Originale Kombination
-    symmetries = [(board_rep, policy)]
+    # Horizontal flip
+    flipped_board = np.flip(board_planes, axis=1).copy()
 
-    # Horizontale Spiegelung (einfaches Beispiel)
-    # Echte Implementierung würde Figuren und Zugrichtungen korrekt spiegeln
-    mirrored_board = np.flip(board_rep, axis=1).copy()
+    # Transform policy to match flipped board
+    # This is a simplified version - a real implementation would require move mapping
+    # to correctly transform the policy according to the board flip
+    flipped_policy = policy.copy()
 
-    # Policy müsste ebenfalls gespiegelt werden, was komplex ist und von der
-    # spezifischen Repräsentation abhängt
-    # Hier ein vereinfachtes Beispiel, das in der Praxis nicht korrekt wäre:
-    mirrored_policy = policy.copy()  # Echte Implementierung würde die Züge richtig spiegeln
-
-    symmetries.append((mirrored_board, mirrored_policy))
+    symmetries.append((flipped_board, flipped_policy))
 
     return symmetries

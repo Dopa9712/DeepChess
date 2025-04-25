@@ -175,7 +175,7 @@ def main():
     parser = argparse.ArgumentParser(description='DeepChess Training Script')
     parser.add_argument('--iterations', type=int, default=10, help='Number of training iterations')
     parser.add_argument('--games', type=int, default=200, help='Number of self-play games per iteration')
-    parser.add_argument('--eval-games', type=int, default=50, help='Number of evaluation games')
+    parser.add_argument('--eval-games', type=int, default=100, help='Number of evaluation games')
     parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs per iteration')
     parser.add_argument('--batch-size', type=int, default=256, help='Batch size for training')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
